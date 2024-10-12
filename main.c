@@ -9,6 +9,23 @@ struct sxclm_vec {
     int size;
 };
 
+void sxclm_rand() {
+}
+void sxclm_calc() {
+}
+void sxclm_cost() {
+}
+void sxclm_save() {
+}
+void sxclm_exec() {
+    sxclm_rand();
+    sxclm_calc();
+    sxclm_cost();
+    if (1) {
+        sxclm_save();
+    }
+}
+
 int main() {
     char src[sxclm_src_capacity];
 
@@ -19,6 +36,10 @@ int main() {
 
     write(1, src, src_n);
     write(1, "\n", 1);
+
+    while (1) {
+        sxclm_exec();
+    }
 
     return 0;
 }
