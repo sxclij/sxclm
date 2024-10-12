@@ -10,7 +10,6 @@ struct sxclm_vec {
     char* data;
     int size;
 };
-
 struct sxclm_model {
     struct sxclm_vec param;
     struct sxclm_vec traning;
@@ -18,20 +17,20 @@ struct sxclm_model {
     int bestscore;
 };
 
-void sxclm_load_file(struct sxclm_vec* v) {
-    int fd = open(sxclm_traning_path, O_RDONLY);
-    v->size = read(fd, v->data, sxclm_traning_size);
-    close(fd);
-}
 void sxclm_load(struct sxclm_model* model, char* param_data, char* traning_data, char* out_data) {
+    int fd;
     *model = (struct sxclm_model) {
         .param = (struct sxclm_vec) {.data = param_data, sxclm_param_size},
         .traning = (struct sxclm_vec) {.data = traning_data, sxclm_traning_size},
         .out = (struct sxclm_vec) {.data = out_data, 0},
         .bestscore = 0,
     };
-    sxclm_load_file(&model->param);
-    sxclm_load_file(&model->traning);
+    fd = open(sxclm_param_path, O_RDONLY);
+    model->param.size = read(fd, model->param.data, sxclm_traning_size);
+    close(fd);
+    fd = open(sxclm_traning_path, O_RDONLY);
+    model->traning.size = read(fd, model->traning.data, sxclm_traning_size);
+    close(fd);
 }
 void sxclm_init(struct sxclm_model* model) {
 }
