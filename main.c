@@ -13,23 +13,24 @@ struct sxclm_vec {
 struct sxclm_model {
     struct sxclm_vec traning;
     struct sxclm_vec param;
+    struct sxclm_vec out;
     int bestscore;
 };
 
-void sxclm_rand() {
+void sxclm_rand(struct sxclm_vec* param) {
 }
-void sxclm_calc() {
+void sxclm_calc(struct sxclm_model* param, struct sxclm_vec* out) {
 }
-void sxclm_cost() {
+int sxclm_scoring(struct sxclm_vec* traning, struct sxclm_vec* out) {
 }
-void sxclm_save() {
+void sxclm_save(struct sxclm_vec* param) {
 }
-void sxclm_exec() {
-    sxclm_rand();
-    sxclm_calc();
-    sxclm_cost();
-    if (1) {
-        sxclm_save();
+void sxclm_exec(struct sxclm_model* model) {
+    sxclm_rand(&model->param);
+    sxclm_calc(&model->param, &model->out);
+    int thisscore = sxclm_scoring(&model->traning, &model->out);
+    if (thisscore >= model->bestscore) {
+        sxclm_save(&model->param);
     }
 }
 
