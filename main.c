@@ -35,6 +35,7 @@ void sxclm_exec(struct sxclm_model* model) {
 }
 
 int main() {
+    static struct sxclm_model model;
     char src[sxclm_src_capacity];
 
     int fd = open(sxclm_traning_path, O_RDONLY);
@@ -42,11 +43,8 @@ int main() {
     src[src_n] = '\0';
     close(fd);
 
-    write(1, src, src_n);
-    write(1, "\n", 1);
-
     while (1) {
-        sxclm_exec();
+        sxclm_exec(&model);
     }
 
     return 0;
