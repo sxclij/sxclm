@@ -4,6 +4,11 @@
 #define sxclm_src_capacity (1 << 16)
 #define sxclm_path "test/1/traning.txt"
 
+struct sxclm_vec {
+    char* data;
+    int size;
+};
+
 int main() {
     char src[sxclm_src_capacity];
 
