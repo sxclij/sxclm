@@ -1,9 +1,10 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#define sxclm_src_capacity (1 << 16)
+#define sxclm_param_size (1 << 16)
+#define sxclm_traning_size (1 << 16)
+#define sxclm_param_path "test/1/param.txt"
 #define sxclm_traning_path "test/1/traning.txt"
-#define sxclm_save_path "test/1/save.txt"
 
 struct sxclm_vec {
     char* data;
@@ -11,19 +12,32 @@ struct sxclm_vec {
 };
 
 struct sxclm_model {
-    struct sxclm_vec traning;
     struct sxclm_vec param;
+    struct sxclm_vec traning;
     struct sxclm_vec out;
     int bestscore;
 };
 
-void sxclm_load(struct sxclm_model* model) {
+void sxclm_load_file(struct sxclm_vec* v) {
+    int fd = open(sxclm_traning_path, O_RDONLY);
+    v->size = read(fd, v->data, sxclm_traning_size);
+    close(fd);
+}
+void sxclm_load(struct sxclm_model* model, char* param_data, char* traning_data, char* out_data) {
+    *model = (struct sxclm_model) {
+        .param = (struct sxclm_vec) {.data = param_data, sxclm_param_size},
+        .traning = (struct sxclm_vec) {.data = traning_data, sxclm_traning_size},
+        .out = (struct sxclm_vec) {.data = out_data, 0},
+        .bestscore = 0,
+    };
+    sxclm_load_file(&model->param);
+    sxclm_load_file(&model->traning);
 }
 void sxclm_init(struct sxclm_model* model) {
 }
 void sxclm_rand(struct sxclm_vec* param) {
 }
-void sxclm_calc(struct sxclm_model* param, struct sxclm_vec* out) {
+void sxclm_calc(struct sxclm_vec* param, struct sxclm_vec* out) {
 }
 int sxclm_scoring(struct sxclm_vec* traning, struct sxclm_vec* out) {
 }
@@ -41,14 +55,11 @@ void sxclm_exec(struct sxclm_model* model) {
 
 int main() {
     static struct sxclm_model model;
-    char src[sxclm_src_capacity];
+    static char param_data[sxclm_param_size];
+    static char traning_data[sxclm_traning_size];
+    static char out_data[sxclm_traning_size];
 
-    int fd = open(sxclm_traning_path, O_RDONLY);
-    int src_n = read(fd, src, sizeof(src) - 1);
-    src[src_n] = '\0';
-    close(fd);
-
-    sxclm_load(&model);
+    sxclm_load(&model,param_data,traning_data, out_data);
     while (1) {
         sxclm_exec(&model);
     }
