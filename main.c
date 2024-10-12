@@ -17,6 +17,10 @@ struct sxclm_model {
     int bestscore;
 };
 
+void sxclm_load(struct sxclm_model* model) {
+}
+void sxclm_init(struct sxclm_model* model) {
+}
 void sxclm_rand(struct sxclm_vec* param) {
 }
 void sxclm_calc(struct sxclm_model* param, struct sxclm_vec* out) {
@@ -26,6 +30,7 @@ int sxclm_scoring(struct sxclm_vec* traning, struct sxclm_vec* out) {
 void sxclm_save(struct sxclm_vec* param) {
 }
 void sxclm_exec(struct sxclm_model* model) {
+    sxclm_init(model);
     sxclm_rand(&model->param);
     sxclm_calc(&model->param, &model->out);
     int thisscore = sxclm_scoring(&model->traning, &model->out);
@@ -43,6 +48,7 @@ int main() {
     src[src_n] = '\0';
     close(fd);
 
+    sxclm_load(&model);
     while (1) {
         sxclm_exec(&model);
     }
