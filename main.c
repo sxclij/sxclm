@@ -18,19 +18,18 @@ struct sxclm_model {
 };
 
 void sxclm_load(struct sxclm_model* model, char* param_data, char* traning_data, char* out_data) {
-    int fd;
     *model = (struct sxclm_model) {
         .param = (struct sxclm_vec) {.data = param_data, sxclm_param_size},
         .traning = (struct sxclm_vec) {.data = traning_data, sxclm_traning_size},
         .out = (struct sxclm_vec) {.data = out_data, 0},
         .bestscore = 0,
     };
-    fd = open(sxclm_param_path, O_RDONLY);
-    model->param.size = read(fd, model->param.data, sxclm_traning_size);
-    close(fd);
-    fd = open(sxclm_traning_path, O_RDONLY);
-    model->traning.size = read(fd, model->traning.data, sxclm_traning_size);
-    close(fd);
+    int fd1 = open(sxclm_param_path, O_RDONLY);
+    model->param.size = read(fd1, model->param.data, sxclm_traning_size);
+    close(fd1);
+    int fd2 = open(sxclm_traning_path, O_RDONLY);
+    model->traning.size = read(fd2, model->traning.data, sxclm_traning_size);
+    close(fd2);
 }
 void sxclm_init(struct sxclm_model* model) {
 }
