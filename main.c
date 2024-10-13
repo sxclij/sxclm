@@ -33,7 +33,7 @@ void sxclm_load(struct sxclm_model* model, char* param_data, char* traning_data,
         .bestscore = 0,
     };
     int fd1 = open(sxclm_param_path, O_RDONLY);
-    model->param.size = read(fd1, model->param.data, sxclm_traning_size);
+    read(fd1, model->param.data, sxclm_traning_size);
     close(fd1);
     int fd2 = open(sxclm_traning_path, O_RDONLY);
     model->traning.size = read(fd2, model->traning.data, sxclm_traning_size);
@@ -56,6 +56,9 @@ void sxclm_calc(struct sxclm_vec* param, struct sxclm_vec* out) {
 int sxclm_scoring(struct sxclm_vec* traning, struct sxclm_vec* out) {
 }
 void sxclm_save(struct sxclm_vec* param) {
+    int fd = open(sxclm_param_path, O_WRONLY);
+    write(fd, param->data, param->size);
+    close(fd);
 }
 void sxclm_exec(struct sxclm_model* model) {
     sxclm_init(model);
