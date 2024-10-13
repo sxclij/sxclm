@@ -3,6 +3,7 @@
 
 #define sxclm_param_size (1 << 16)
 #define sxclm_traning_size (1 << 16)
+#define sxclm_random_size (1 << 8)
 #define sxclm_param_path "test/1/param.txt"
 #define sxclm_traning_path "test/1/traning.txt"
 
@@ -18,10 +19,10 @@ struct sxclm_model {
 };
 
 void sxclm_load(struct sxclm_model* model, char* param_data, char* traning_data, char* out_data) {
-    *model = (struct sxclm_model) {
-        .param = (struct sxclm_vec) {.data = param_data, sxclm_param_size},
-        .traning = (struct sxclm_vec) {.data = traning_data, sxclm_traning_size},
-        .out = (struct sxclm_vec) {.data = out_data, 0},
+    *model = (struct sxclm_model){
+        .param = (struct sxclm_vec){.data = param_data, sxclm_param_size},
+        .traning = (struct sxclm_vec){.data = traning_data, sxclm_traning_size},
+        .out = (struct sxclm_vec){.data = out_data, 0},
         .bestscore = 0,
     };
     int fd1 = open(sxclm_param_path, O_RDONLY);
@@ -35,6 +36,8 @@ void sxclm_init(struct sxclm_model* model) {
     model->out.size = 0;
 }
 void sxclm_rand(struct sxclm_vec* param) {
+    for (int i = 0; i < sxclm_random_size; i++) {
+    }
 }
 void sxclm_calc(struct sxclm_vec* param, struct sxclm_vec* out) {
 }
@@ -58,7 +61,7 @@ int main() {
     static char traning_data[sxclm_traning_size];
     static char out_data[sxclm_traning_size];
 
-    sxclm_load(&model,param_data,traning_data, out_data);
+    sxclm_load(&model, param_data, traning_data, out_data);
     while (1) {
         sxclm_exec(&model);
     }
