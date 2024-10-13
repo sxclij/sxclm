@@ -32,6 +32,7 @@ void sxclm_load(struct sxclm_model* model, char* param_data, char* traning_data,
     close(fd2);
 }
 void sxclm_init(struct sxclm_model* model) {
+    model->out.size = 0;
 }
 void sxclm_rand(struct sxclm_vec* param) {
 }
