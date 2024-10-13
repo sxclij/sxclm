@@ -51,8 +51,8 @@ void sxclm_init(struct sxclm_model* model) {
     model->out.size = 0;
 }
 void sxclm_rand(struct sxclm_vec* param) {
-    u64 x1 = 0;
-    u64 x2 = 0;
+    u64 x1 = 1;
+    u64 x2 = 2;
     for (i32 i = 0; i < sxclm_random_size; i++) {
         x1 = xorshift(x1);
         x2 = xorshift(x2);
