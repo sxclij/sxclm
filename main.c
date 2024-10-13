@@ -18,6 +18,13 @@ struct sxclm_model {
     int bestscore;
 };
 
+long long int xorshift(long long int x) {
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    return x;
+}
+
 void sxclm_load(struct sxclm_model* model, char* param_data, char* traning_data, char* out_data) {
     *model = (struct sxclm_model){
         .param = (struct sxclm_vec){.data = param_data, sxclm_param_size},
