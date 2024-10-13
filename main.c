@@ -43,7 +43,12 @@ void sxclm_init(struct sxclm_model* model) {
     model->out.size = 0;
 }
 void sxclm_rand(struct sxclm_vec* param) {
+    long long int x1 = 0;
+    long long int x2 = 0;
     for (int i = 0; i < sxclm_random_size; i++) {
+        x1 = xorshift(x1);
+        x2 = xorshift(x2);
+        param->data[x1 % param->size] = x2;
     }
 }
 void sxclm_calc(struct sxclm_vec* param, struct sxclm_vec* out) {
