@@ -31,6 +31,11 @@ u64 xorshift(u64 x) {
     x ^= x << 17;
     return x;
 }
+i32 file_read(const char* path, i8* dst, i32 size) {
+    i32 fd = open(path, O_RDONLY);
+    read(fd, dst, size);
+    return close(fd);
+}
 
 void sxclm_load(struct sxclm_model* model, i8* param_data, i8* traning_data, i8* out_data) {
     *model = (struct sxclm_model){
@@ -39,12 +44,8 @@ void sxclm_load(struct sxclm_model* model, i8* param_data, i8* traning_data, i8*
         .out = (struct sxclm_vec){.data = out_data, 0},
         .bestscore = 0,
     };
-    i32 fd1 = open(sxclm_param_path, O_RDONLY);
-    read(fd1, model->param.data.i8, sxclm_traning_size);
-    close(fd1);
-    i32 fd2 = open(sxclm_traning_path, O_RDONLY);
-    model->traning.size = read(fd2, model->traning.data.i8, sxclm_traning_size);
-    close(fd2);
+    file_read(sxclm_param_path, model->param.data.i8,sxclm_param_size);
+    model->traning.size = file_read(sxclm_traning_path, model->traning.data.i8,sxclm_traning_size);
 }
 void sxclm_init(struct sxclm_model* model) {
     model->out.size = 0;
