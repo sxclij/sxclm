@@ -8,7 +8,10 @@
 #define sxclm_traning_path "test/1/traning.txt"
 
 struct sxclm_vec {
-    char* data;
+    union {
+        char* i8;
+        long long unsigned* u64;
+    } data;
     int size;
 };
 struct sxclm_model {
@@ -18,7 +21,7 @@ struct sxclm_model {
     int bestscore;
 };
 
-long long int xorshift(long long int x) {
+long long unsigned xorshift(long long unsigned x) {
     x ^= x << 13;
     x ^= x >> 7;
     x ^= x << 17;
@@ -33,22 +36,22 @@ void sxclm_load(struct sxclm_model* model, char* param_data, char* traning_data,
         .bestscore = 0,
     };
     int fd1 = open(sxclm_param_path, O_RDONLY);
-    read(fd1, model->param.data, sxclm_traning_size);
+    read(fd1, model->param.data.i8, sxclm_traning_size);
     close(fd1);
     int fd2 = open(sxclm_traning_path, O_RDONLY);
-    model->traning.size = read(fd2, model->traning.data, sxclm_traning_size);
+    model->traning.size = read(fd2, model->traning.data.i8, sxclm_traning_size);
     close(fd2);
 }
 void sxclm_init(struct sxclm_model* model) {
     model->out.size = 0;
 }
 void sxclm_rand(struct sxclm_vec* param) {
-    long long int x1 = 0;
-    long long int x2 = 0;
+    long long unsigned x1 = 0;
+    long long unsigned x2 = 0;
     for (int i = 0; i < sxclm_random_size; i++) {
         x1 = xorshift(x1);
         x2 = xorshift(x2);
-        param->data[x1 % param->size] = x2;
+        param->data.i8[x1 % param->size] = x2;
     }
 }
 void sxclm_calc(struct sxclm_vec* param, struct sxclm_vec* out) {
@@ -57,7 +60,7 @@ int sxclm_scoring(struct sxclm_vec* traning, struct sxclm_vec* out) {
 }
 void sxclm_save(struct sxclm_vec* param) {
     int fd = open(sxclm_param_path, O_WRONLY);
-    write(fd, param->data, param->size);
+    write(fd, param->data.i8, param->size);
     close(fd);
 }
 void sxclm_exec(struct sxclm_model* model) {
