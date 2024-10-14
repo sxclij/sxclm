@@ -22,7 +22,7 @@ struct sxclm_model {
     struct sxclm_vec param;
     struct sxclm_vec traning;
     struct sxclm_vec out;
-    struct sxclm_vec layer;
+    i32 layer[128];
     i32 bestscore;
 };
 
@@ -38,12 +38,12 @@ i32 file_read(const char* path, i8* dst, i32 size) {
     return close(fd);
 }
 
-void sxclm_load(struct sxclm_model* model, i8* param_data, i8* traning_data, i8* out_data, i8* layer_data) {
+void sxclm_load(struct sxclm_model* model, i8* param_data, i8* traning_data, i8* out_data) {
     *model = (struct sxclm_model){
         .param = (struct sxclm_vec){.data = param_data, sxclm_param_size},
         .traning = (struct sxclm_vec){.data = traning_data, sxclm_traning_size},
         .out = (struct sxclm_vec){.data = out_data, 0},
-        .layer = (struct sxclm_vec){.data = layer_data, 0},
+        .layer = {4,5,4,0},
         .bestscore = 0,
     };
     file_read(sxclm_param_path, model->param.data.i8, sxclm_param_size);
@@ -88,7 +88,7 @@ i32 main() {
     static i8 out_data[sxclm_traning_size];
     static i8 layer_data[128];
 
-    sxclm_load(&model, param_data, traning_data, out_data, layer_data);
+    sxclm_load(&model, param_data, traning_data, out_data);
     while (1) {
         sxclm_exec(&model);
     }
