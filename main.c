@@ -4,15 +4,16 @@
 #include <string.h>
 #include <time.h>
 #include <math.h>
+#include <limits.h>
 
 // Configuration constants
-#define PARAM_BYTE (1024 * 1024)  // 1MB parameter size
-#define BUFFER_BYTE 1024          // Input buffer size
-#define LAYER_BITSIZE 512         // Size of each layer
+#define PARAM_BYTE (1024 * 1024)  // 1MB parameter size (in bytes)
+#define BUFFER_BYTE 1024          // Buffer size for reading files and states
+#define LAYER_BITSIZE 512         // Size of each layer (in bits)
 #define LAYER_DEPTH 3             // Number of layers
 #define LEARNING_RATE 0.1f        // Learning rate for parameter updates
 #define EPSILON 0.1f              // Exploration rate
-#define GAMMA 0.99f               // Discount factor for future rewards
+#define GAMMA 0.99f              // Discount factor for future rewards
 
 // Bitset data structure
 typedef struct {
@@ -44,7 +45,9 @@ typedef struct {
     float epsilon;
 } NeuralNetwork;
 
+// -------------------------
 // Bitset functions
+// -------------------------
 Bitset* bitset_create(size_t size) {
     if (size == 0) return NULL;
     
@@ -92,7 +95,9 @@ int bitset_get(const Bitset* bitset, size_t index) {
     return (bitset->bits[index / 64] & (1ULL << (index % 64))) != 0;
 }
 
-// Experience replay buffer functions
+// -------------------------
+// Replay Buffer functions
+// -------------------------
 ReplayBuffer* replay_buffer_create(size_t capacity) {
     ReplayBuffer* buffer = malloc(sizeof(ReplayBuffer));
     if (!buffer) return NULL;
@@ -122,16 +127,20 @@ void replay_buffer_add(ReplayBuffer* buffer, const char* state, int action,
     
     Experience* exp = &buffer->experiences[buffer->position];
     strncpy(exp->state, state, BUFFER_BYTE - 1);
+    exp->state[BUFFER_BYTE - 1] = '\0';
     exp->action = action;
     exp->reward = reward;
     strncpy(exp->next_state, next_state, BUFFER_BYTE - 1);
+    exp->next_state[BUFFER_BYTE - 1] = '\0';
     exp->done = done;
     
     buffer->position = (buffer->position + 1) % buffer->capacity;
     if (buffer->size < buffer->capacity) buffer->size++;
 }
 
-// Neural network functions
+// -------------------------
+// Neural Network functions
+// -------------------------
 int neural_calc(const Bitset* param, const char* source) {
     if (!param || !source) return -1;
 
@@ -143,7 +152,7 @@ int neural_calc(const Bitset* param, const char* source) {
         return -1;
     }
 
-    // Initialize input layer
+    // Initialize input layer using the source string.
     size_t source_len = strlen(source);
     for (size_t i = 0; i < source_len && i < LAYER_BITSIZE/256; i++) {
         bitset_set1(input, 256 * i + (unsigned char)source[i]);
@@ -192,6 +201,7 @@ int neural_calc(const Bitset* param, const char* source) {
             return result;
         }
 
+        // Prepare for next layer: swap input and output
         Bitset* tmp = input;
         input = output;
         output = tmp;
@@ -206,18 +216,20 @@ NeuralNetwork* neural_network_create() {
     NeuralNetwork* nn = malloc(sizeof(NeuralNetwork));
     if (!nn) return NULL;
     
-    nn->params = bitset_create(PARAM_BYTE * 8);  // Convert bytes to bits
-    nn->replay_buffer = replay_buffer_create(10000);  // Store 10000 experiences
+    // Create parameter bitset (bytes converted to bits)
+    nn->params = bitset_create(PARAM_BYTE * 8);
+    nn->replay_buffer = replay_buffer_create(10000);  // Capacity for 10,000 experiences
     nn->epsilon = EPSILON;
     
     if (!nn->params || !nn->replay_buffer) {
         return NULL;
     }
     
-    // Initialize parameters randomly
-    srand(time(NULL));
+    // Randomly initialize the parameters
+    srand((unsigned)time(NULL));
     for (size_t i = 0; i < nn->params->size; i++) {
-        if (rand() % 2) bitset_set1(nn->params, i);
+        if (rand() % 2)
+            bitset_set1(nn->params, i);
     }
     
     return nn;
@@ -225,18 +237,17 @@ NeuralNetwork* neural_network_create() {
 
 int select_action(NeuralNetwork* nn, const char* state) {
     if ((float)rand() / RAND_MAX < nn->epsilon) {
-        // Exploration: random action
+        // Exploration: choose a random action (0 to 127)
         return rand() % 128;
     } else {
-        // Exploitation: use network
+        // Exploitation: calculate action using the network
         return neural_calc(nn->params, state);
     }
 }
 
 void update_network(NeuralNetwork* nn) {
-    if (!nn || nn->replay_buffer->size < 32) return;  // Need minimum batch size
-    
-    // Sample random batch from replay buffer
+    if (!nn || nn->replay_buffer->size < 32) return;  // Minimum batch size
+
     const size_t batch_size = 32;
     for (size_t i = 0; i < batch_size; i++) {
         size_t idx = rand() % nn->replay_buffer->size;
@@ -246,16 +257,15 @@ void update_network(NeuralNetwork* nn) {
         float target = exp->reward;
         if (!exp->done) {
             int next_action = neural_calc(nn->params, exp->next_state);
-            target += GAMMA * next_action;  // Simple Q-learning update
+            target += GAMMA * next_action;  // Simplified Q-learning update
         }
         
         // Calculate current Q-value
         int current = neural_calc(nn->params, exp->state);
         
-        // Update parameters based on error
+        // Update parameters if error exceeds learning rate
         float error = target - current;
         if (fabs(error) > LEARNING_RATE) {
-            // Update weights by toggling bits in direction of error
             size_t param_start = exp->action * LAYER_BITSIZE * 2;
             for (size_t j = 0; j < LAYER_BITSIZE * 2; j++) {
                 if (rand() % 100 < fabs(error) * 100) {
@@ -265,48 +275,214 @@ void update_network(NeuralNetwork* nn) {
         }
     }
     
-    // Decay epsilon
+    // Decay epsilon gradually
     nn->epsilon *= 0.995f;
-    if (nn->epsilon < 0.01f) nn->epsilon = 0.01f;
+    if (nn->epsilon < 0.01f)
+        nn->epsilon = 0.01f;
 }
 
-// Example usage
-int main() {
-    // Create neural network
-    NeuralNetwork* nn = neural_network_create();
+int save_parameters(const NeuralNetwork* nn, const char* filename) {
+    if (!nn || !nn->params || !filename) {
+        return -1;
+    }
+
+    FILE* file = fopen(filename, "wb");
+    if (!file) {
+        return -1;
+    }
+
+    size_t param_size = nn->params->size;
+    size_t array_size = (param_size + 63) / 64;
+    
+    if (fwrite(&param_size, sizeof(size_t), 1, file) != 1) {
+        fclose(file);
+        return -1;
+    }
+    if (fwrite(&nn->epsilon, sizeof(float), 1, file) != 1) {
+        fclose(file);
+        return -1;
+    }
+    if (fwrite(nn->params->bits, sizeof(uint64_t), array_size, file) != array_size) {
+        fclose(file);
+        return -1;
+    }
+
+    fclose(file);
+    return 0;
+}
+
+NeuralNetwork* load_parameters(const char* filename) {
+    FILE* file = fopen(filename, "rb");
+    if (!file) {
+        return NULL;
+    }
+
+    size_t param_size;
+    if (fread(&param_size, sizeof(size_t), 1, file) != 1) {
+        fclose(file);
+        return NULL;
+    }
+
+    NeuralNetwork* nn = malloc(sizeof(NeuralNetwork));
     if (!nn) {
-        printf("Failed to create neural network\n");
+        fclose(file);
+        return NULL;
+    }
+
+    if (fread(&nn->epsilon, sizeof(float), 1, file) != 1) {
+        free(nn);
+        fclose(file);
+        return NULL;
+    }
+
+    nn->params = bitset_create(param_size);
+    if (!nn->params) {
+        free(nn);
+        fclose(file);
+        return NULL;
+    }
+
+    size_t array_size = (param_size + 63) / 64;
+    if (fread(nn->params->bits, sizeof(uint64_t), array_size, file) != array_size) {
+        bitset_free(nn->params);
+        free(nn);
+        fclose(file);
+        return NULL;
+    }
+
+    nn->replay_buffer = replay_buffer_create(10000);
+    if (!nn->replay_buffer) {
+        bitset_free(nn->params);
+        free(nn);
+        fclose(file);
+        return NULL;
+    }
+
+    fclose(file);
+    return nn;
+}
+
+// -------------------------
+// Utility Functions
+// -------------------------
+
+// Reads the entire contents of a file into a dynamically allocated string.
+// The caller is responsible for freeing the returned string.
+char* read_file(const char* filename) {
+    FILE* file = fopen(filename, "r");
+    if (!file)
+        return NULL;
+    
+    fseek(file, 0, SEEK_END);
+    long length = ftell(file);
+    rewind(file);
+    
+    char* buffer = malloc(length + 1);
+    if (buffer) {
+        fread(buffer, 1, length, file);
+        buffer[length] = '\0';
+    }
+    fclose(file);
+    return buffer;
+}
+
+// -------------------------
+// Main function
+// -------------------------
+int main() {
+    // Print teacher instructions (if available) from teacher.txt
+    char* teacherText = read_file("teacher.txt");
+    if (teacherText) {
+        printf("=== Teacher Instructions ===\n%s\n", teacherText);
+        free(teacherText);
+    } else {
+        printf("teacher.txt not found.\n");
+    }
+    
+    // Read the initial state from input.txt
+    char init_state[BUFFER_BYTE] = "Initial state"; // default value
+    FILE* fin = fopen("input.txt", "r");
+    if (fin) {
+        if (fgets(init_state, BUFFER_BYTE, fin) != NULL) {
+            // Remove trailing newline if any
+            size_t len = strlen(init_state);
+            if (len > 0 && init_state[len - 1] == '\n')
+                init_state[len - 1] = '\0';
+        }
+        fclose(fin);
+    } else {
+        printf("input.txt not found. Using default initial state.\n");
+    }
+    
+    // Open output.txt for writing results.
+    FILE* fout = fopen("output.txt", "w");
+    if (!fout) {
+        printf("Failed to open output.txt for writing.\n");
         return 1;
     }
     
-    // Training loop example
-    for (int episode = 0; episode < 1000; episode++) {
-        char state[BUFFER_BYTE] = "Initial state";
+    // Create and initialize the neural network.
+    NeuralNetwork* nn = neural_network_create();
+    if (!nn) {
+        fprintf(fout, "Failed to create neural network\n");
+        fclose(fout);
+        return 1;
+    }
+    
+    // Training loop: run 100 episodes using the initial state from input.txt.
+    for (int episode = 0; episode < 100; episode++) {
+        char state[BUFFER_BYTE];
+        strncpy(state, init_state, BUFFER_BYTE - 1);
+        state[BUFFER_BYTE - 1] = '\0';
         float total_reward = 0;
         int done = 0;
         
+        // Run one episode until termination condition is met.
         while (!done) {
-            // Select action
             int action = select_action(nn, state);
-            
-            // Execute action in environment (simplified)
-            float reward = (float)(action % 10) / 10.0f;  // Dummy reward
+            float reward = (float)(action % 10) / 10.0f;
             char next_state[BUFFER_BYTE];
             snprintf(next_state, BUFFER_BYTE, "State after action %d", action);
-            done = (reward > 0.8f);  // End episode on high reward
+            done = (reward > 0.8f);
             
-            // Store experience
             replay_buffer_add(nn->replay_buffer, state, action, reward, next_state, done);
-            
-            // Update network
             update_network(nn);
             
-            // Update state and accumulate reward
-            strncpy(state, next_state, BUFFER_BYTE);
+            strncpy(state, next_state, BUFFER_BYTE - 1);
+            state[BUFFER_BYTE - 1] = '\0';
             total_reward += reward;
         }
         
-        printf("Episode %d: Total reward = %.2f\n", episode, total_reward);
+        // Write episode results to output.txt
+        fprintf(fout, "Episode %d: Total reward = %.2f\n", episode, total_reward);
+        
+        // Save parameters every 10 episodes
+        if (episode % 10 == 0) {
+            if (save_parameters(nn, "neural_network.bin") == 0) {
+                fprintf(fout, "Parameters saved successfully\n");
+            } else {
+                fprintf(fout, "Failed to save parameters\n");
+            }
+        }
     }
+    
+    // Demonstrate loading parameters from file.
+    NeuralNetwork* loaded_nn = load_parameters("neural_network.bin");
+    if (loaded_nn) {
+        fprintf(fout, "Successfully loaded parameters\n");
+        // Clean up loaded network.
+        bitset_free(loaded_nn->params);
+        replay_buffer_free(loaded_nn->replay_buffer);
+        free(loaded_nn);
+    }
+    
+    // Clean up original network.
+    bitset_free(nn->params);
+    replay_buffer_free(nn->replay_buffer);
+    free(nn);
+    
+    fclose(fout);
+    printf("Training complete. Check output.txt for results.\n");
+    
     return 0;
 }
