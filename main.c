@@ -1,4 +1,4 @@
-#include <immintrin.h>  // For SIMD intrinsics
+#include <immintrin.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -68,11 +68,6 @@ void bitset_swap(struct bitset** a, struct bitset** b) {
     *b = t;
 }
 
-/*
-   Helper: Vectorized popcount for a 256-bit register.
-   It uses a nibble–lookup via _mm256_shuffle_epi8.
-   The result is returned as four 64–bit integers (each lane holding the popcount of 64 bits).
-*/
 static inline __m256i popcount256(__m256i v) {
     const __m256i lookup = _mm256_setr_epi8(
         0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
@@ -83,14 +78,10 @@ static inline __m256i popcount256(__m256i v) {
     __m256i popcnt1 = _mm256_shuffle_epi8(lookup, lo);
     __m256i popcnt2 = _mm256_shuffle_epi8(lookup, hi);
     __m256i popcnt = _mm256_add_epi8(popcnt1, popcnt2);
-    /* Sum every 8 bytes to produce four 64-bit sums */
     __m256i sum = _mm256_sad_epu8(popcnt, _mm256_setzero_si256());
     return sum;
 }
 
-/*
-   Helper: Horizontal sum of four 64-bit integers stored in a __m256i register.
-*/
 static inline int64_t horizontal_sum(__m256i v) {
     __m128i vlow = _mm256_castsi256_si128(v);
     __m128i vhigh = _mm256_extracti128_si256(v, 1);
@@ -100,25 +91,15 @@ static inline int64_t horizontal_sum(__m256i v) {
     return res;
 }
 
-/*
-   Compute the “dot–product” for one neuron using SIMD.
-   For each neuron the parameter block is arranged in two parts:
-      - The first LAYER_BITSIZE bits (i.e. 512 bits) for the positive contribution.
-      - The next LAYER_BITSIZE bits for the negative contribution.
-   The dot product is:
-         dot = popcount( state & param_pos ) - popcount( state & param_neg )
-*/
 static int compute_dot(const uint64_t* state, const uint64_t* param, int start_bit) {
-    // Each neuron uses 2 * LAYER_BITSIZE bits.
-    // Compute the start offset (in uint64_t words) for the positive and negative blocks.
-    int words_per_block = LAYER_BITSIZE / 64;  // For 512 bits -> 8 words.
-    // For the neuron we assume parameters start at bit offset: start_bit.
+    int words_per_block = LAYER_BITSIZE / 64;
+
     const uint64_t* param_pos = param + (start_bit / 64);
     const uint64_t* param_neg = param + (start_bit / 64) + words_per_block;
 
     __m256i dot_sum = _mm256_setzero_si256();
-    // Process 256 bits (i.e. 4 uint64_t words) at a time.
-    int blocks = words_per_block / 4;  // e.g. 8/4 = 2 iterations.
+
+    int blocks = words_per_block / 4;
     for (int j = 0; j < blocks; j++) {
         __m256i s = _mm256_loadu_si256((__m256i const*)(state + j * 4));
         __m256i p_pos = _mm256_loadu_si256((__m256i const*)(param_pos + j * 4));
@@ -134,15 +115,7 @@ static int compute_dot(const uint64_t* state, const uint64_t* param, int start_b
     return dot;
 }
 
-/*
-   The improved version of nnmodel_calc_ch uses SIMD to process
-   the dot–product between the current state and the parameter bits.
-   For each output neuron we compute:
-       dot = popcount( state & param_pos ) - popcount( state & param_neg )
-   And we also keep track of the neuron with the highest score.
-*/
 char nnmodel_calc_ch(struct nnmodel* model, char ch) {
-    // Initialize state: clear bits 128..383 and set only bit for input character.
     for (int32_t i = 0; i < 256; i++) {
         bitset_set0(model->state, i + 128);
     }
@@ -150,15 +123,11 @@ char nnmodel_calc_ch(struct nnmodel* model, char ch) {
 
     int32_t param_i = 0;
     int8_t maxchar_index = 0;
-    int8_t maxchar_value = -128;  // A low initial value
+    int8_t maxchar_value = -128;
 
-    // For each neuron (each output bit) in the layer.
-    // Note: The loop still runs LAYER_BITSIZE times (e.g. 512 neurons).
     for (int32_t output_i = 0; output_i < LAYER_BITSIZE; output_i++) {
-        // Instead of the inner loop over input bits,
-        // use compute_dot() to process 512 bits at once.
         int dot = compute_dot(model->state->data, model->param->data, param_i);
-        param_i += 2 * LAYER_BITSIZE;  // Move to next neuron's parameter block.
+        param_i += 2 * LAYER_BITSIZE;
 
         if (dot > maxchar_value && output_i < 256) {
             maxchar_index = output_i;
