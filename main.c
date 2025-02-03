@@ -8,9 +8,9 @@
 
 #define BUFFER_BITSIZE 1024
 #define LAYER_BITSIZE 512
-#define LAYER_DEPTH 4
+#define LAYER_DEPTH 3
 #define PARAM_BITSIZE (LAYER_BITSIZE * LAYER_BITSIZE * (LAYER_DEPTH - 1) * 2)
-#define EXPLORE_RATE 100
+#define EXPLORE_RATE 36
 #define MUTATION_RATE 0.01
 
 struct bitset {
@@ -117,9 +117,9 @@ static int compute_dot(const uint64_t* state, const uint64_t* param, int start_b
 
 char nnmodel_calc_ch(struct nnmodel* model, char ch) {
     for (int32_t i = 0; i < 256; i++) {
-        bitset_set0(model->state, i + 128);
+        bitset_set0(model->state, i);
     }
-    bitset_set1(model->state, ch);
+    bitset_set1(model->state, ch + 128);
 
     int32_t param_i = 0;
     int8_t maxchar_index = 0;
@@ -147,8 +147,12 @@ void nnmodel_calc(struct nnmodel* model, const char* input, int32_t count) {
     int32_t input_size = strlen(input);
     memcpy(model->output, input, input_size);
     bitset_clear(model->state);
-    for (int32_t i = input_size; i < input_size + count; i++) {
-        model->output[i] = nnmodel_calc_ch(model, input[i]);
+    int chend = 0;
+    for (int32_t i = 0; i < input_size + count; i++) {
+        if(input[i] == '\0') {
+            chend = 1;
+        }
+        model->output[i] = nnmodel_calc_ch(model, chend ? 0 : input[i]);
     }
     model->output[input_size + count] = '\0';
 }
@@ -182,7 +186,6 @@ void nnmodel_mutation(struct nnmodel* model) {
 }
 
 void nnmodel_train(struct nnmodel* model) {
-    const int32_t max_iterations = 10000000;
     char input_buffer[256];
     int32_t teacher_length = strlen(model->teacher);
 
@@ -194,7 +197,7 @@ void nnmodel_train(struct nnmodel* model) {
     xorshift_state = (uint32_t)time(NULL);
 
     int explore = 0;
-    for (int32_t iteration = 0; iteration < max_iterations; iteration++) {
+    for (int32_t iteration = 0; 1; iteration++) {
         int score = 0;
         int correct_predictions = 0;
         char ch_last = 0;
@@ -203,13 +206,15 @@ void nnmodel_train(struct nnmodel* model) {
         for (int i = 1; i < teacher_length; i++) {
             char ch_result = model->output[i];
             char ch_teacher = model->teacher[i];
+            int diff = abs(ch_result - ch_teacher);
             if (ch_result == ch_teacher) {
-                score += 100;
+                score += 10000;
                 correct_predictions += 1;
             } else {
-                if (ch_result != ch_last) {
-                    score += 6;
-                }
+                break;
+                // if (ch_result != ch_last) {
+                //     score += 6;
+                // }
             }
             ch_last = ch_result;
         }
