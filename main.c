@@ -6,34 +6,56 @@
 #include <string.h>
 #include <time.h>
 
-#define BUFFER_BITSIZE 1024
-#define LAYER_BITSIZE 512
-#define LAYER_DEPTH 3
+#define BUFFER_BITSIZE (1024 * 8)
+#define LAYER_BITSIZE 1024
+#define LAYER_DEPTH 4
 #define PARAM_BITSIZE (LAYER_BITSIZE * LAYER_BITSIZE * (LAYER_DEPTH - 1) * 2)
-#define EXPLORE_RATE 36
-#define MUTATION_RATE 0.01
+#define EXPLORE_RATE 72
+#define MUTATION_RATE 0.0004
+#define OUTPUT_CAPACITY (BUFFER_BITSIZE / 8)
 
+struct vec {
+    char* data;
+    int32_t size;
+};
 struct bitset {
     uint64_t* data;
     int32_t size;
 };
-
 struct nnmodel {
     struct bitset* param;
     struct bitset* backup;
     struct bitset* state;
     struct bitset* buf;
     const char* teacher;
-    char* output;
+    struct vec output;
     int32_t bestscore;
 };
+
+void vec_init(struct vec* v, char* data) {
+    v->data = data;
+    v->size = 0;
+    v->data[0] = '\0';
+}
+
+void vec_clear(struct vec* v) {
+    v->size = 0;
+    v->data[0] = '\0';
+}
+
+void vec_push_back(struct vec* v, char c, int capacity) {
+    if (v->size < capacity - 1) {
+        v->data[v->size++] = c;
+        v->data[v->size] = '\0';
+    }
+}
 
 void file_read(char* dst, const char* filename) {
     FILE* file = fopen(filename, "r");
     fseek(file, 0, SEEK_END);
     long file_size = ftell(file);
     fseek(file, 0, SEEK_SET);
-    size_t bytes_read = fread(dst, 1, file_size, file);
+    fread(dst, 1, file_size, file);
     fclose(file);
     dst[file_size] = '\0';
 }
@@ -68,6 +90,35 @@ void bitset_swap(struct bitset** a, struct bitset** b) {
     *b = t;
 }
 
+#ifdef __AVX512VPOPCNTDQ__
+static int compute_dot(const uint64_t* state, const uint64_t* param, int start_bit) {
+    int words_per_block = LAYER_BITSIZE / 64;
+    const uint64_t* param_pos = param + (start_bit / 64);
+    const uint64_t* param_neg = param + (start_bit / 64) + words_per_block;
+    __m512i dot_sum = _mm512_setzero_si512();
+    int blocks = words_per_block / 8;
+    for (int j = 0; j < blocks; j++) {
+        __m512i s = _mm512_loadu_si512((__m512i const*)(state + j * 8));
+        __m512i p_pos = _mm512_loadu_si512((__m512i const*)(param_pos + j * 8));
+        __m512i p_neg = _mm512_loadu_si512((__m512i const*)(param_neg + j * 8));
+        __m512i masked_pos = _mm512_and_si512(s, p_pos);
+        __m512i masked_neg = _mm512_and_si512(s, p_neg);
+        __m512i cnt_pos = _mm512_popcnt_epi64(masked_pos);
+        __m512i cnt_neg = _mm512_popcnt_epi64(masked_neg);
+        __m512i diff = _mm512_sub_epi64(cnt_pos, cnt_neg);
+        dot_sum = _mm512_add_epi64(dot_sum, diff);
+    }
+
+    uint64_t tmp[8];
+    _mm512_storeu_si512(tmp, dot_sum);
+    int dot = 0;
+    for (int i = 0; i < 8; i++) {
+        dot += tmp[i];
+    }
+    return dot;
+}
+#else
+
 static inline __m256i popcount256(__m256i v) {
     const __m256i lookup = _mm256_setr_epi8(
         0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
@@ -93,12 +144,9 @@ static inline int64_t horizontal_sum(__m256i v) {
 
 static int compute_dot(const uint64_t* state, const uint64_t* param, int start_bit) {
     int words_per_block = LAYER_BITSIZE / 64;
-
     const uint64_t* param_pos = param + (start_bit / 64);
     const uint64_t* param_neg = param + (start_bit / 64) + words_per_block;
-
     __m256i dot_sum = _mm256_setzero_si256();
-
     int blocks = words_per_block / 4;
     for (int j = 0; j < blocks; j++) {
         __m256i s = _mm256_loadu_si256((__m256i const*)(state + j * 4));
@@ -114,23 +162,22 @@ static int compute_dot(const uint64_t* state, const uint64_t* param, int start_b
     int dot = (int)horizontal_sum(dot_sum);
     return dot;
 }
+#endif
 
-char nnmodel_calc_ch(struct nnmodel* model, char ch) {
-    for (int32_t i = 0; i < 256; i++) {
-        bitset_set0(model->state, i);
-    }
+void nnmodel_calc_input(struct nnmodel* model, char ch) {
+    memset(model->state->data, 0, (256 / 8));
     bitset_set1(model->state, ch + 128);
+}
 
+void nnmodel_calc_next(struct nnmodel* model) {
     int32_t param_i = 0;
     int8_t maxchar_index = 0;
     int8_t maxchar_value = -128;
-
     for (int32_t output_i = 0; output_i < LAYER_BITSIZE; output_i++) {
         int dot = compute_dot(model->state->data, model->param->data, param_i);
         param_i += 2 * LAYER_BITSIZE;
-
         if (dot > maxchar_value && output_i < 256) {
-            maxchar_index = output_i;
+            maxchar_index = output_i - 128;
             maxchar_value = dot;
         }
         if (dot > 0) {
@@ -140,21 +187,20 @@ char nnmodel_calc_ch(struct nnmodel* model, char ch) {
         }
     }
     bitset_swap(&model->state, &model->buf);
-    return maxchar_index - 128;
+    vec_push_back(&model->output, maxchar_index, OUTPUT_CAPACITY);
 }
 
 void nnmodel_calc(struct nnmodel* model, const char* input, int32_t count) {
     int32_t input_size = strlen(input);
-    memcpy(model->output, input, input_size);
+    vec_clear(&model->output);
     bitset_clear(model->state);
-    int chend = 0;
-    for (int32_t i = 0; i < input_size + count; i++) {
-        if(input[i] == '\0') {
-            chend = 1;
-        }
-        model->output[i] = nnmodel_calc_ch(model, chend ? 0 : input[i]);
+    for (int32_t i = 0; i < input_size; i++) {
+        nnmodel_calc_input(model, input[i]);
+        nnmodel_calc_next(model);
     }
-    model->output[input_size + count] = '\0';
+    for (int32_t i = input_size; i < input_size + count; i++) {
+        nnmodel_calc_next(model);
+    }
 }
 
 void nnmodel_backup_save(struct nnmodel* model) {
@@ -165,8 +211,7 @@ void nnmodel_backup_load(struct nnmodel* model) {
     memcpy(model->param->data, model->backup->data, model->param->size / 8);
 }
 
-static uint32_t xorshift_state = 34563;
-
+static uint32_t xorshift_state;
 uint32_t xorshift(void) {
     uint32_t x = xorshift_state;
     x ^= x << 13;
@@ -178,7 +223,6 @@ uint32_t xorshift(void) {
 
 void nnmodel_mutation(struct nnmodel* model) {
     int32_t num_mutations = (model->param->size / 64) * MUTATION_RATE;
-
     for (int32_t i = 0; i < num_mutations; i++) {
         int32_t bit_index = xorshift() % model->param->size;
         bitset_toggle(model->param, bit_index);
@@ -186,39 +230,30 @@ void nnmodel_mutation(struct nnmodel* model) {
 }
 
 void nnmodel_train(struct nnmodel* model) {
-    char input_buffer[256];
+    char input_buffer[BUFFER_BITSIZE / 8];
     int32_t teacher_length = strlen(model->teacher);
-
-    input_buffer[0] = model->teacher[0];
-    input_buffer[1] = '\0';
+    memcpy(input_buffer, model->teacher, teacher_length / 2);
+    input_buffer[teacher_length / 2] = '\0';
 
     nnmodel_backup_save(model);
-
     xorshift_state = (uint32_t)time(NULL);
-
     int explore = 0;
     for (int32_t iteration = 0; 1; iteration++) {
         int score = 0;
         int correct_predictions = 0;
-        char ch_last = 0;
-
-        nnmodel_calc(model, input_buffer, teacher_length);
-        for (int i = 1; i < teacher_length; i++) {
-            char ch_result = model->output[i];
+        vec_clear(&model->output);
+        for (int i = 0; i < teacher_length; i++) {
+            nnmodel_calc_input(model, input_buffer[i]);
+            nnmodel_calc_next(model);
+            char ch_result = model->output.data[i];
             char ch_teacher = model->teacher[i];
-            int diff = abs(ch_result - ch_teacher);
             if (ch_result == ch_teacher) {
                 score += 10000;
                 correct_predictions += 1;
             } else {
                 break;
-                // if (ch_result != ch_last) {
-                //     score += 6;
-                // }
             }
-            ch_last = ch_result;
         }
-
         if (score > model->bestscore) {
             model->bestscore = score;
             nnmodel_backup_save(model);
@@ -226,7 +261,6 @@ void nnmodel_train(struct nnmodel* model) {
                    iteration,
                    score,
                    (correct_predictions * 100) / (teacher_length - 1));
-
             if (correct_predictions == teacher_length - 1) {
                 printf("Perfect prediction achieved! Training complete.\n");
                 break;
@@ -243,7 +277,12 @@ void nnmodel_train(struct nnmodel* model) {
     }
 }
 
-struct nnmodel nnmodel_init(struct bitset* param, struct bitset* backup, struct bitset* buf1, struct bitset* buf2, const char* teacher, char* output) {
+struct nnmodel nnmodel_init(struct bitset* param,
+                            struct bitset* backup,
+                            struct bitset* buf1,
+                            struct bitset* buf2,
+                            const char* teacher,
+                            struct vec output) {
     struct nnmodel model = {
         .param = param,
         .backup = backup,
@@ -252,11 +291,9 @@ struct nnmodel nnmodel_init(struct bitset* param, struct bitset* backup, struct 
         .teacher = teacher,
         .output = output,
         .bestscore = 0};
-
     for (int32_t i = 0; i < param->size; i++) {
         bitset_set0(param, i);
     }
-
     return model;
 }
 
@@ -265,22 +302,29 @@ int main() {
     static uint64_t backup_data[PARAM_BITSIZE / 64];
     static uint64_t state_data[LAYER_BITSIZE / 64];
     static uint64_t buf_data[LAYER_BITSIZE / 64];
-
     struct bitset param_bitset = bitset_init(param_data, PARAM_BITSIZE);
     struct bitset backup_bitset = bitset_init(backup_data, PARAM_BITSIZE);
     struct bitset state_bitset = bitset_init(state_data, LAYER_BITSIZE);
     struct bitset buf_bitset = bitset_init(buf_data, LAYER_BITSIZE);
 
-    static char teacher[BUFFER_BITSIZE];
-    static char output[BUFFER_BITSIZE];
-
+    static char teacher[BUFFER_BITSIZE / 8];
+    static char output_buf[BUFFER_BITSIZE / 8];
     file_read(teacher, "./teacher.txt");
 
-    struct nnmodel model = nnmodel_init(&param_bitset, &backup_bitset, &state_bitset, &buf_bitset, teacher, output);
+    struct vec output_vec;
+    vec_init(&output_vec, output_buf);
+
+    struct nnmodel model = nnmodel_init(&param_bitset,
+                                        &backup_bitset,
+                                        &state_bitset,
+                                        &buf_bitset,
+                                        teacher,
+                                        output_vec);
 
     nnmodel_train(&model);
 
     printf("Final best score: %d\n", model.bestscore);
+    printf("Model output:\n%s\n", model.output.data);
 
     return 0;
 }
