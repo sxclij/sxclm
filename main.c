@@ -6,17 +6,19 @@
 #include <string.h>
 #include <time.h>
 
-#define THREAD_COUNT 12
-#define BUFFER_BITSIZE (1024 * 8)
-#define OUTPUT_BITSIZE 1024
-#define LAYER_BITSIZE 2048
-#define LAYER_DEPTH 4
+#define THREAD_COUNT 14
+#define BUFFER_BITSIZE (1024 * 1024)
+#define OUTPUT_BITSIZE (1024 * 512)
+
+#define TEACHER_BUFFER_BITSIZE (1024 * 256)
+#define LAYER_BITSIZE 1024
+#define LAYER_DEPTH 6
 #define PARAM_BITSIZE (LAYER_BITSIZE * LAYER_BITSIZE * (LAYER_DEPTH - 1) * 2)
+
 #define COMPLETE_RATE 0.85
-#define EXPLORE_RATE 72
+#define EXPLORE_RATE 12
 #define MUTATION_RATE 0.0002
-#define CANCELLATION_RATE 3
-#define TEACHER_BUFFER_SIZE (1024 * 16)
+#define CANCELLATION_RATE 2
 
 struct vec {
     char* data;
@@ -28,7 +30,7 @@ struct bitset {
     int32_t size;
 };
 
-static char teacher_buffer[TEACHER_BUFFER_SIZE];
+static char teacher_buffer[TEACHER_BUFFER_BITSIZE / 8];
 static const char* teacher = NULL;
 
 static struct bitset backup;
@@ -60,12 +62,10 @@ void vec_init(struct vec* v, char* data) {
 
 void vec_clear(struct vec* v) {
     v->size = 0;
-    v->data[0] = '\0';
 }
 
 void vec_push_back(struct vec* v, char c) {
     v->data[v->size++] = c;
-    v->data[v->size] = '\0';
 }
 
 void file_read(char* dst, const char* filename) {
@@ -77,11 +77,18 @@ void file_read(char* dst, const char* filename) {
     fseek(file, 0, SEEK_END);
     long file_size = ftell(file);
     rewind(file);
-    if (file_size >= TEACHER_BUFFER_SIZE)
-        file_size = TEACHER_BUFFER_SIZE - 1;
     fread(dst, 1, file_size, file);
     fclose(file);
     dst[file_size] = '\0';
+}
+void file_write(struct vec* src, const char* filename) {
+    FILE* file = fopen(filename, "w");
+    if (!file) {
+        perror(filename);
+        return;
+    }
+    fwrite(src->data, 1, src->size, file);
+    fclose(file);
 }
 
 void write_backup_to_file(const void* data, size_t bytes) {
@@ -205,7 +212,7 @@ static int compute_dot(const uint64_t* state_ptr, const uint64_t* param_ptr, int
 #endif
 
 void nn_calc_input(int tid, char ch) {
-    bitset_clear(&state[tid]);
+    memset(state[tid].data, 0, 256 / 8);
     bitset_set1(&state[tid], ch + 128);
 }
 
@@ -239,6 +246,7 @@ void nn_calc(int tid, const char* input, int32_t count) {
         nn_calc_next(tid);
     }
     for (int32_t i = input_size; i < input_size + count; i++) {
+        memset(state[tid].data, 0, 256 / 8);
         nn_calc_next(tid);
     }
 }
@@ -263,7 +271,7 @@ void nn_mutation(int tid) {
 void* train_thread(void* arg) {
     int tid = *(int*)arg;
 
-    char input_buffer[BUFFER_BITSIZE];
+    char input_buffer[BUFFER_BITSIZE / 8];
     int teacher_length = (int)strlen(teacher);
     int input_len = teacher_length / 2;
     memcpy(input_buffer, teacher, input_len);
@@ -275,7 +283,7 @@ void* train_thread(void* arg) {
     while (!training_done) {
         int score = 0;
         int correct_predictions = 0;
-        int correct_last = -1;
+        int correct_last = 0;
         vec_clear(&output[tid]);
         bitset_clear(&state[tid]);
 
@@ -285,7 +293,7 @@ void* train_thread(void* arg) {
             char ch_result = output[tid].data[i];
             char ch_teacher = teacher[i];
             if (ch_result == ch_teacher) {
-                score += 100;
+                score += 1;
                 if (correct_last == i - 1) {
                     score += 10000;
                     correct_predictions++;
@@ -331,7 +339,7 @@ void* train_thread(void* arg) {
 }
 
 void generate() {
-    char input_buffer[BUFFER_BITSIZE];
+    char input_buffer[BUFFER_BITSIZE / 8];
 
     file_read(input_buffer, "./input.txt");
     if (strlen(input_buffer) == 0) {
@@ -340,24 +348,16 @@ void generate() {
     }
     printf("Generating output from seed: \"%s\"\n", input_buffer);
 
-    int extra_chars = 256;
-
     vec_clear(&output[0]);
-    bitset_clear(&state[0]);
 
     pthread_mutex_lock(&bestscore_mutex);
     memcpy(param[0].data, backup.data, (backup.size + 7) / 8);
     pthread_mutex_unlock(&bestscore_mutex);
 
-    nn_calc(0, input_buffer, extra_chars);
+    nn_calc(0, input_buffer, OUTPUT_BITSIZE / 8);
 
-    FILE* fout = fopen("./output.txt", "w");
-    if (!fout) {
-        perror("Failed to open ./output.txt for writing");
-        return;
-    }
-    fprintf(fout, "%s", output[0].data);
-    fclose(fout);
+    file_write(&output[0], "./output.txt");
+
     printf("Generated output written to ./output.txt\n");
 }
 
@@ -375,18 +375,17 @@ void global_init() {
         state[i] = bitset_init(state_data[i], LAYER_BITSIZE);
         buf[i] = bitset_init(buf_data[i], LAYER_BITSIZE);
         vec_init(&output[i], output_data[i]);
-
         memcpy(param[i].data, backup.data, (backup.size + 7) / 8);
-    }
-    for (int i = 0; i < THREAD_COUNT; i++) {
-        tid_data[i] = i;
-        pthread_create(&threads[i], NULL, train_thread, &tid_data[i]);
     }
 }
 
 int main() {
     global_init();
 
+    for (int i = 0; i < THREAD_COUNT; i++) {
+        tid_data[i] = i;
+        pthread_create(&threads[i], NULL, train_thread, &tid_data[i]);
+    }
     for (int i = 0; i < THREAD_COUNT; i++) {
         pthread_join(threads[i], NULL);
     }
