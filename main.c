@@ -3,14 +3,16 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
 #define THREAD_COUNT 14
 #define BUFFER_BITSIZE (1024 * 1024)
 #define OUTPUT_BITSIZE (1024 * 512)
+#define TEACHER_BITSIZE (1024 * 256)
+#define TEACHER_PAIRS_MAX 256
 
-#define TEACHER_BUFFER_BITSIZE (1024 * 256)
 #define LAYER_BITSIZE 1024
 #define LAYER_DEPTH 6
 #define PARAM_BITSIZE (LAYER_BITSIZE * LAYER_BITSIZE * (LAYER_DEPTH - 1) * 2)
@@ -18,7 +20,7 @@
 #define COMPLETE_RATE 0.85
 #define EXPLORE_RATE 12
 #define MUTATION_RATE 0.0002
-#define CANCELLATION_RATE 2
+#define CANCELLATION_RATE 3
 
 struct vec {
     char* data;
@@ -30,8 +32,14 @@ struct bitset {
     int32_t size;
 };
 
-static char teacher_buffer[TEACHER_BUFFER_BITSIZE / 8];
-static const char* teacher = NULL;
+struct teacher_pair {
+    struct vec user;
+    struct vec sxclm;
+};
+
+static char teacher_data[TEACHER_BITSIZE / 8];
+struct teacher_pair teacher_pairs[TEACHER_PAIRS_MAX];
+static int teacher_pair_count = 0;
 
 static struct bitset backup;
 static uint64_t backup_data[PARAM_BITSIZE / 64];
@@ -40,7 +48,7 @@ static int32_t bestscore = 0;
 static uint64_t param_data[THREAD_COUNT][PARAM_BITSIZE / 64];
 static uint64_t state_data[THREAD_COUNT][LAYER_BITSIZE / 64];
 static uint64_t buf_data[THREAD_COUNT][LAYER_BITSIZE / 64];
-static char input_data[THREAD_COUNT][OUTPUT_BITSIZE / 8];   // backing store for input vectors
+static char input_data[THREAD_COUNT][OUTPUT_BITSIZE / 8];  // backing store for input vectors
 static char output_data[THREAD_COUNT][OUTPUT_BITSIZE / 8];
 
 int tid_data[THREAD_COUNT];
@@ -50,7 +58,7 @@ static struct bitset param[THREAD_COUNT];
 static struct bitset state[THREAD_COUNT];
 static struct bitset buf[THREAD_COUNT];
 static struct vec output[THREAD_COUNT];
-static struct vec input[THREAD_COUNT];   // now used for input, instead of local buffers
+static struct vec input[THREAD_COUNT];  // now used for input, instead of local buffers
 
 static volatile int training_done = 0;
 
@@ -68,6 +76,7 @@ void vec_clear(struct vec* v) {
 
 void vec_push_back(struct vec* v, char c) {
     v->data[v->size++] = c;
+    v->data[v->size] = '\0';
 }
 
 void file_read(char* dst, const char* filename) {
@@ -245,33 +254,19 @@ void nn_calc_next(int tid) {
     vec_push_back(&output[tid], maxchar_index);
 }
 
-void nn_calc(int tid, const char* input_str, int32_t count) {
-    int32_t input_size = (int32_t)strlen(input_str);
-    vec_clear(&output[tid]);
-    bitset_clear(&state[tid]);
-    for (int32_t i = 0; i < input_size; i++) {
-        nn_calc_input(tid, input_str[i]);
-        nn_calc_next(tid);
-    }
-    for (int32_t i = input_size; i < input_size + count; i++) {
-        nn_calc_input(tid, '\0');
-        nn_calc_next(tid);
-    }
-}
-
-static inline uint32_t xorshift_r(uint32_t* state_ptr) {
-    uint32_t x = *state_ptr;
+static inline uint32_t xorshift_r(int tid) {
+    uint32_t x = thread_rand[tid];
     x ^= x << 13;
     x ^= x >> 17;
     x ^= x << 5;
-    *state_ptr = x;
+    thread_rand[tid] = x;
     return x;
 }
 
 void nn_mutation(int tid) {
     int32_t num_mutations = (param[tid].size / 64) * MUTATION_RATE;
     for (int32_t i = 0; i < num_mutations; i++) {
-        int32_t bit_index = xorshift_r(&thread_rand[tid]) % param[tid].size;
+        int32_t bit_index = xorshift_r(tid) % param[tid].size;
         bitset_toggle(&param[tid], bit_index);
     }
 }
@@ -280,10 +275,10 @@ void* train_thread(void* arg) {
     int tid = *(int*)arg;
 
     vec_clear(&input[tid]);
-    int teacher_length = (int)strlen(teacher);
+    int teacher_length = (int)strlen(teacher_data);
     int input_len = teacher_length / 2;
     for (int i = 0; i < input_len; i++) {
-        vec_push_back(&input[tid], teacher[i]);
+        vec_push_back(&input[tid], teacher_data[i]);
     }
     input[tid].data[input_len] = '\0';
 
@@ -301,7 +296,7 @@ void* train_thread(void* arg) {
             nn_calc_input(tid, input[tid].data[i]);
             nn_calc_next(tid);
             char ch_result = output[tid].data[i];
-            char ch_teacher = teacher[i];
+            char ch_teacher = teacher_data[i];
             if (ch_result == ch_teacher) {
                 score += 1;
                 if (correct_last == i - 1) {
@@ -325,7 +320,7 @@ void* train_thread(void* arg) {
                     printf("Thread %d, Iteration %d: New best score: %d (Accuracy: %d%%)\n",
                            tid, iteration, score,
                            (correct_predictions * 100) / (input_len ? input_len : 1));
-                    if (correct_predictions == input_len * COMPLETE_RATE) {
+                    if (correct_predictions >= input_len * COMPLETE_RATE) {
                         printf("Thread %d: Perfect prediction achieved! Training complete.\n", tid);
                         training_done = 1;
                     }
@@ -359,11 +354,19 @@ void generate() {
     }
     printf("Generating output from seed: \"%s\"\n", input[0].data);
 
-    vec_clear(&output[0]);
-
     bitset_cpy(&param[0], &backup);
+    vec_clear(&output[0]);
+    bitset_clear(&state[0]);
 
-    nn_calc(0, input[0].data, OUTPUT_BITSIZE / 8);
+    for (int32_t i = 0; i < input->size; i++) {
+        nn_calc_input(0, input->data[i]);
+        nn_calc_next(0);
+    }
+    vec_clear(&output[0]);
+    for (int32_t i = input->size; i < input->size + OUTPUT_BITSIZE / 8; i++) {
+        nn_calc_input(0, '\0');
+        nn_calc_next(0);
+    }
 
     file_write(&output[0], "./output.txt");
 
@@ -371,8 +374,7 @@ void generate() {
 }
 
 void global_init() {
-    file_read(teacher_buffer, "./teacher.txt");
-    teacher = teacher_buffer;
+    file_read(teacher_data, "./teacher.txt");
 
     backup = bitset_init(backup_data, PARAM_BITSIZE);
     bitset_clear(&backup);
@@ -389,8 +391,78 @@ void global_init() {
     }
 }
 
+/* ===== NEW CODE: Teacher Parser Using struct vec ===== */
+
+// A structure holding one teacher “pair” of messages.
+// Each pair contains a <user>…</user> block and the following <sxclm>…</sxclm> block.
+
+void parse_teacher_data(void) {
+    char* pos = teacher_data;
+    const char* user_open = "<user>";
+    const char* user_close = "</user>";
+    const char* sxclm_open = "<sxclm>";
+    const char* sxclm_close = "</sxclm>";
+
+    while (teacher_pair_count < TEACHER_PAIRS_MAX) {
+        char* user_start = strstr(pos, user_open);
+        if (!user_start)
+            break;
+        char* user_end = strstr(user_start, user_close);
+        if (!user_end)
+            break;
+        user_end += strlen(user_close);  // include closing tag
+
+        int user_len = (int)(user_end - user_start);
+        char* user_str = malloc(user_len + 1);
+        if (!user_str) {
+            perror("malloc");
+            exit(1);
+        }
+        memcpy(user_str, user_start, user_len);
+        user_str[user_len] = '\0';
+
+        // Find the sxclm block that follows
+        char* sxclm_start = strstr(user_end, sxclm_open);
+        if (!sxclm_start)
+            break;
+        char* sxclm_end = strstr(sxclm_start, sxclm_close);
+        if (!sxclm_end)
+            break;
+        sxclm_end += strlen(sxclm_close);
+
+        int sxclm_len = (int)(sxclm_end - sxclm_start);
+        char* sxclm_str = malloc(sxclm_len + 1);
+        if (!sxclm_str) {
+            perror("malloc");
+            exit(1);
+        }
+        memcpy(sxclm_str, sxclm_start, sxclm_len);
+        sxclm_str[sxclm_len] = '\0';
+
+        // Store the parsed messages in the teacher_pairs array.
+        teacher_pairs[teacher_pair_count].user.data = user_str;
+        teacher_pairs[teacher_pair_count].user.size = user_len;
+        teacher_pairs[teacher_pair_count].sxclm.data = sxclm_str;
+        teacher_pairs[teacher_pair_count].sxclm.size = sxclm_len;
+
+        teacher_pair_count++;
+        pos = sxclm_end;
+    }
+}
+
+/* ====================================================== */
+
 int main() {
     global_init();
+
+    /* --- Call the teacher parser and print parsed results --- */
+    parse_teacher_data();
+    printf("Parsed teacher data (%d pairs):\n", teacher_pair_count);
+    for (int i = 0; i < teacher_pair_count; i++) {
+        printf("Pair %d:\n", i + 1);
+        printf("  %s\n", teacher_pairs[i].user.data);
+        printf("  %s\n", teacher_pairs[i].sxclm.data);
+    }
 
     for (int i = 0; i < THREAD_COUNT; i++) {
         tid_data[i] = i;
