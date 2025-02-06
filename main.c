@@ -14,13 +14,13 @@
 #define TEACHER_PAIRS_MAX 256
 
 #define LAYER_BITSIZE 1024
-#define LAYER_DEPTH 6
+#define LAYER_DEPTH 4
 #define PARAM_BITSIZE (LAYER_BITSIZE * LAYER_BITSIZE * (LAYER_DEPTH - 1) * 2)
 
-#define COMPLETE_RATE 0.85
-#define EXPLORE_RATE 12
-#define MUTATION_RATE 0.0002
-#define CANCELLATION_RATE 3
+#define COMPLETE_RATE 0.99
+#define EXPLORE_RATE 360
+#define MUTATION_RATE 0.0004
+#define CANCELLATION_RATE 0.80
 
 struct vec {
     char* data;
@@ -33,8 +33,8 @@ struct bitset {
 };
 
 struct teacher_pair {
-    struct vec user;   // input seed
-    struct vec sxclm;  // expected output
+    struct vec user;
+    struct vec sxclm;
 };
 
 static char teacher_data[TEACHER_BITSIZE / 8];
@@ -49,7 +49,7 @@ static int32_t bestscore = 0;
 static uint64_t param_data[THREAD_COUNT][PARAM_BITSIZE / 64];
 static uint64_t state_data[THREAD_COUNT][LAYER_BITSIZE / 64];
 static uint64_t buf_data[THREAD_COUNT][LAYER_BITSIZE / 64];
-static char input_data[THREAD_COUNT][OUTPUT_BITSIZE / 8];  // backing store for input vectors
+static char input_data[THREAD_COUNT][OUTPUT_BITSIZE / 8];
 static char output_data[THREAD_COUNT][OUTPUT_BITSIZE / 8];
 
 int tid_data[THREAD_COUNT];
@@ -59,7 +59,7 @@ static struct bitset param[THREAD_COUNT];
 static struct bitset state[THREAD_COUNT];
 static struct bitset buf[THREAD_COUNT];
 static struct vec output[THREAD_COUNT];
-static struct vec input[THREAD_COUNT];  // now used for input instead of local buffers
+static struct vec input[THREAD_COUNT];
 
 static volatile int training_done = 0;
 
@@ -231,33 +231,29 @@ static int compute_dot(const uint64_t* state_ptr, const uint64_t* param_ptr, int
 }
 #endif
 
-// Feed a single character into the network by setting the corresponding bit.
-void nn_calc_input(int tid, char ch) {
+void nn_calc_next(int tid, char ch) {
     memset(state[tid].data, 0, LAYER_BITSIZE / 8);
     bitset_set1(&state[tid], ch + 128);
-}
-
-// Process one “time‐step” of the network.
-// This function computes one dot–product per output neuron, sets the corresponding bit in buf,
-// and tracks the output “character” (for the first 256 outputs).
-void nn_calc_next(int tid) {
     int32_t param_i = 0;
     int8_t maxchar_index = 0;
     int8_t maxchar_value = -128;
-    for (int32_t output_i = 0; output_i < LAYER_BITSIZE; output_i++) {
-        int dot = compute_dot(state[tid].data, param[tid].data, param_i);
-        param_i += 2 * LAYER_BITSIZE;
-        if (dot > maxchar_value && output_i < 256) {
-            maxchar_index = output_i - 128;
-            maxchar_value = dot;
+
+    for (int32_t layer_i = 0; layer_i < LAYER_DEPTH - 1; layer_i++) {
+        for (int32_t output_i = 0; output_i < LAYER_BITSIZE; output_i++) {
+            int dot = compute_dot(state[tid].data, param[tid].data, param_i);
+            param_i += 2 * LAYER_BITSIZE;
+            if (layer_i == LAYER_DEPTH - 2 && dot > maxchar_value && output_i < 256) {
+                maxchar_index = output_i - 128;
+                maxchar_value = dot;
+            }
+            if (dot > 0) {
+                bitset_set1(&buf[tid], output_i);
+            } else {
+                bitset_set0(&buf[tid], output_i);
+            }
         }
-        if (dot > 0) {
-            bitset_set1(&buf[tid], output_i);
-        } else {
-            bitset_set0(&buf[tid], output_i);
-        }
+        bitset_swap(&state[tid], &buf[tid]);
     }
-    bitset_swap(&state[tid], &buf[tid]);
     vec_push_back(&output[tid], maxchar_index);
 }
 
@@ -278,11 +274,6 @@ void nn_mutation(int tid) {
     }
 }
 
-/* ===== MODIFIED TRAINING THREAD =====
-   Instead of using a single teacher_data string, this version randomly selects a teacher_pair
-   and uses its "user" text as input and its "sxclm" text as the expected output.
-   This allows each teacher pair to be both a training and a test example.
-===================================================== */
 void* train_thread(void* arg) {
     int tid = *(int*)arg;
     thread_rand[tid] = (uint32_t)time(NULL) + tid;
@@ -291,40 +282,42 @@ void* train_thread(void* arg) {
     int iteration = 0;
     while (!training_done) {
         int score = 0;
-        int correct_predictions = 0;
-        int correct_last = -1;
+        int wrong_count = 0;
+        int correct_count = 0;
+        int correct_last1 = -1;
+        int correct_last2 = -1;
         int endtest = 0;
 
         for (int i = 0; i < teacher_pair_count && !endtest; i++) {
-            vec_clear(&output[tid]);
             bitset_clear(&state[tid]);
+            vec_clear(&output[tid]);
             for (int j = 0; j < teacher_pair[i].user.size; j++) {
-                nn_calc_input(tid, teacher_pair[i].user.data[j]);
-                nn_calc_next(tid);
+                nn_calc_next(tid, teacher_pair[i].user.data[j]);
             }
+            vec_clear(&output[tid]);
             for (int j = 0; j < teacher_pair[i].user.size; j++) {
-                nn_calc_input(tid, '\0');
-                nn_calc_next(tid);
-                char ch_result = output[tid].data[i];
+                nn_calc_next(tid, -128);
+                char ch_result = output[tid].data[j];
                 char ch_teacher = teacher_pair[i].sxclm.data[j];
                 if (ch_result == ch_teacher) {
                     score += 1;
-                    // Reward sequential correct predictions.
-                    if (correct_last == i - 1) {
+                    if (correct_last1 == i - 1) {
                         score += 10000;
-                        correct_predictions++;
+                        correct_count++;
+                        correct_last2 = i;
                     }
-                    correct_last = i;
+                    correct_last1 = i;
+                } else {
+                    wrong_count++;
                 }
-                // Early break if too many consecutive mistakes.
-                if (i - correct_last == CANCELLATION_RATE) {
-                    endtest = 1;
-                    break;
-                }
+
+                // if ((float)wrong_count / (float)(correct_count + wrong_count) > CANCELLATION_RATE) {
+                //     endtest = 1;
+                //     break;
+                // }
             }
         }
 
-        // Update best score and backup parameters if improved.
         if (score > bestscore) {
             pthread_mutex_lock(&bestscore_mutex);
             if (score > bestscore) {
@@ -332,10 +325,10 @@ void* train_thread(void* arg) {
                 if (iteration != 0) {
                     memcpy(backup.data, param[tid].data, (backup.size + 7) / 8);
                     write_backup_to_file(backup.data, (backup.size + 7) / 8);
-                    printf("Thread %d, Iteration %d: New best score: %d (Accuracy: %d%%)\n",
-                           tid, iteration, score,
-                           (correct_predictions * 100) / teacher_sxclm_totallen);
-                    if (correct_predictions >= teacher_sxclm_totallen * COMPLETE_RATE) {
+                    printf("Thread:%2d,  Iteration:%8d,  New best score:%8d,  explore:%2d, Accuracy:%3d%%\n",
+                           tid, iteration, score, explore,
+                           (correct_count * 100) / teacher_sxclm_totallen);
+                    if (correct_count >= teacher_sxclm_totallen * COMPLETE_RATE) {
                         printf("Thread %d: Sufficient accuracy achieved! Training complete.\n", tid);
                         training_done = 1;
                     }
@@ -359,7 +352,6 @@ void* train_thread(void* arg) {
 }
 
 void generate() {
-    // Use the first thread's input vector as the seed.
     vec_clear(&input[0]);
     file_read(input[0].data, "./input.txt");
     input[0].size = strlen(input[0].data);
@@ -373,15 +365,12 @@ void generate() {
     vec_clear(&output[0]);
     bitset_clear(&state[0]);
 
-    // Process the seed.
     for (int32_t i = 0; i < input[0].size; i++) {
-        nn_calc_input(0, input[0].data[i]);
-        nn_calc_next(0);
+        nn_calc_next(0, input[0].data[i]);
     }
-    // Generate additional output.
+
     for (int32_t i = input[0].size; i < input[0].size + OUTPUT_BITSIZE / 8; i++) {
-        nn_calc_input(0, '\0');
-        nn_calc_next(0);
+        nn_calc_next(0, '\0');
     }
 
     file_write(&output[0], "./output.txt");
@@ -402,16 +391,11 @@ void global_init() {
         state[i] = bitset_init(state_data[i], LAYER_BITSIZE);
         buf[i] = bitset_init(buf_data[i], LAYER_BITSIZE);
         vec_init(&output[i], output_data[i]);
-        vec_init(&input[i], input_data[i]);  // Initialize the input vector here
+        vec_init(&input[i], input_data[i]);
         memcpy(param[i].data, backup.data, (backup.size + 7) / 8);
     }
 }
 
-/* ===== TEACHER PARSER (USING struct vec) =====
-   The teacher file is expected to contain a number of <user>…</user> blocks
-   followed by <sxclm>…</sxclm> blocks. This parser extracts each pair into a
-   teacher_pair struct.
-===================================================== */
 void parse_teacher_data(void) {
     char* pos = teacher_data;
     const char* user_open = "<user>";
@@ -426,11 +410,10 @@ void parse_teacher_data(void) {
         char* user_end = strstr(user_start, user_close);
         if (!user_end)
             break;
-        user_end += strlen(user_close);  // include closing tag
+        user_end += strlen(user_close);
 
         int user_len = (int)(user_end - user_start);
 
-        // Find the sxclm block that follows.
         char* sxclm_start = strstr(user_end, sxclm_open);
         if (!sxclm_start)
             break;
@@ -442,7 +425,6 @@ void parse_teacher_data(void) {
         int sxclm_len = (int)(sxclm_end - sxclm_start);
         teacher_sxclm_totallen += sxclm_len;
 
-        // Store the parsed messages in the teacher_pairs array.
         teacher_pair[teacher_pair_count].user.data = user_start;
         teacher_pair[teacher_pair_count].user.size = user_len;
         teacher_pair[teacher_pair_count].sxclm.data = sxclm_start;
@@ -456,7 +438,6 @@ void parse_teacher_data(void) {
 int main() {
     global_init();
 
-    /* --- Parse teacher data and print the parsed teacher pairs --- */
     parse_teacher_data();
     printf("Parsed teacher data (%d pairs):\n", teacher_pair_count);
 
@@ -471,12 +452,6 @@ int main() {
     printf("Training complete. Best score = %d\n", bestscore);
 
     generate();
-
-    // (Optional) Free allocated teacher pair strings here.
-    for (int i = 0; i < teacher_pair_count; i++) {
-        free(teacher_pair[i].user.data);
-        free(teacher_pair[i].sxclm.data);
-    }
 
     return 0;
 }
