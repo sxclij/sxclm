@@ -40,7 +40,8 @@ static int32_t bestscore = 0;
 static uint64_t param_data[THREAD_COUNT][PARAM_BITSIZE / 64];
 static uint64_t state_data[THREAD_COUNT][LAYER_BITSIZE / 64];
 static uint64_t buf_data[THREAD_COUNT][LAYER_BITSIZE / 64];
-static char output_data[THREAD_COUNT][OUTPUT_BITSIZE];
+static char input_data[THREAD_COUNT][OUTPUT_BITSIZE / 8];   // backing store for input vectors
+static char output_data[THREAD_COUNT][OUTPUT_BITSIZE / 8];
 
 int tid_data[THREAD_COUNT];
 pthread_t threads[THREAD_COUNT];
@@ -49,6 +50,7 @@ static struct bitset param[THREAD_COUNT];
 static struct bitset state[THREAD_COUNT];
 static struct bitset buf[THREAD_COUNT];
 static struct vec output[THREAD_COUNT];
+static struct vec input[THREAD_COUNT];   // now used for input, instead of local buffers
 
 static volatile int training_done = 0;
 
@@ -81,6 +83,7 @@ void file_read(char* dst, const char* filename) {
     fclose(file);
     dst[file_size] = '\0';
 }
+
 void file_write(struct vec* src, const char* filename) {
     FILE* file = fopen(filename, "w");
     if (!file) {
@@ -127,6 +130,11 @@ void bitset_toggle(struct bitset* bs, int32_t index) {
 
 int bitset_get(const struct bitset* bs, int32_t index) {
     return (bs->data[index / 64] & (1ULL << (index % 64))) != 0;
+}
+
+void bitset_cpy(struct bitset* dst, struct bitset* src) {
+    memcpy(dst->data, src->data, src->size / 64);
+    dst->size = src->size;
 }
 
 void bitset_clear(struct bitset* bs) {
@@ -237,16 +245,16 @@ void nn_calc_next(int tid) {
     vec_push_back(&output[tid], maxchar_index);
 }
 
-void nn_calc(int tid, const char* input, int32_t count) {
-    int32_t input_size = (int32_t)strlen(input);
+void nn_calc(int tid, const char* input_str, int32_t count) {
+    int32_t input_size = (int32_t)strlen(input_str);
     vec_clear(&output[tid]);
     bitset_clear(&state[tid]);
     for (int32_t i = 0; i < input_size; i++) {
-        nn_calc_input(tid, input[i]);
+        nn_calc_input(tid, input_str[i]);
         nn_calc_next(tid);
     }
     for (int32_t i = input_size; i < input_size + count; i++) {
-        memset(state[tid].data, 0, 256 / 8);
+        nn_calc_input(tid, '\0');
         nn_calc_next(tid);
     }
 }
@@ -271,11 +279,13 @@ void nn_mutation(int tid) {
 void* train_thread(void* arg) {
     int tid = *(int*)arg;
 
-    char input_buffer[BUFFER_BITSIZE / 8];
+    vec_clear(&input[tid]);
     int teacher_length = (int)strlen(teacher);
     int input_len = teacher_length / 2;
-    memcpy(input_buffer, teacher, input_len);
-    input_buffer[input_len] = '\0';
+    for (int i = 0; i < input_len; i++) {
+        vec_push_back(&input[tid], teacher[i]);
+    }
+    input[tid].data[input_len] = '\0';
 
     thread_rand[tid] = (uint32_t)time(NULL) + tid;
     int explore = 0;
@@ -288,7 +298,7 @@ void* train_thread(void* arg) {
         bitset_clear(&state[tid]);
 
         for (int i = 0; i < input_len; i++) {
-            nn_calc_input(tid, input_buffer[i]);
+            nn_calc_input(tid, input[tid].data[i]);
             nn_calc_next(tid);
             char ch_result = output[tid].data[i];
             char ch_teacher = teacher[i];
@@ -339,22 +349,21 @@ void* train_thread(void* arg) {
 }
 
 void generate() {
-    char input_buffer[BUFFER_BITSIZE / 8];
-
-    file_read(input_buffer, "./input.txt");
-    if (strlen(input_buffer) == 0) {
+    // Use the first thread's input vector
+    vec_clear(&input[0]);
+    file_read(input[0].data, "./input.txt");
+    input[0].size = strlen(input[0].data);
+    if (input[0].size == 0) {
         printf("No seed input found in ./input.txt\n");
         return;
     }
-    printf("Generating output from seed: \"%s\"\n", input_buffer);
+    printf("Generating output from seed: \"%s\"\n", input[0].data);
 
     vec_clear(&output[0]);
 
-    pthread_mutex_lock(&bestscore_mutex);
-    memcpy(param[0].data, backup.data, (backup.size + 7) / 8);
-    pthread_mutex_unlock(&bestscore_mutex);
+    bitset_cpy(&param[0], &backup);
 
-    nn_calc(0, input_buffer, OUTPUT_BITSIZE / 8);
+    nn_calc(0, input[0].data, OUTPUT_BITSIZE / 8);
 
     file_write(&output[0], "./output.txt");
 
@@ -375,6 +384,7 @@ void global_init() {
         state[i] = bitset_init(state_data[i], LAYER_BITSIZE);
         buf[i] = bitset_init(buf_data[i], LAYER_BITSIZE);
         vec_init(&output[i], output_data[i]);
+        vec_init(&input[i], input_data[i]);  // Initialize the input vector here
         memcpy(param[i].data, backup.data, (backup.size + 7) / 8);
     }
 }
