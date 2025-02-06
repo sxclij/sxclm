@@ -1,1 +1,1 @@
-<user>Is ice cold?</user>
+<user>What is your name?</user>
