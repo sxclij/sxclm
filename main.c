@@ -18,9 +18,9 @@
 #define PARAM_BITSIZE (LAYER_BITSIZE * LAYER_BITSIZE * (LAYER_DEPTH - 1) * 2)
 
 #define COMPLETE_RATE 0.99
-#define EXPLORE_RATE 24
-#define MUTATION_RATE 0.0002
-#define CANCELLATION_RATE 0.75
+#define EXPLORE_RATE 36
+#define MUTATION_RATE 0.0004
+#define CANCELLATION_RATE 0.25
 
 struct vec {
     char* data;
@@ -254,7 +254,7 @@ void nn_calc_next(int tid, char ch) {
     vec_push_back(&output[tid], maxchar_index - 128);
 }
 
-static inline uint64_t xorshift_r(int tid) {
+static inline uint64_t xorshift(int tid) {
     uint64_t x = thread_rand[tid];
     x ^= x << 13;
     x ^= x >> 17;
@@ -265,8 +265,8 @@ static inline uint64_t xorshift_r(int tid) {
 
 void nn_mutation(int tid) {
     for (int32_t i = 0; i < param[tid].size / 64; i++) {
-        if (xorshift_r(tid) <= MUTATION_RATE * UINT64_MAX) {
-            param[tid].data[i] ^= xorshift_r(tid);
+        if (xorshift(tid) <= MUTATION_RATE * UINT64_MAX) {
+            param[tid].data[i] ^= xorshift(tid);
         }
     }
 }
