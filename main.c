@@ -13,14 +13,14 @@
 #define TEACHER_BITSIZE (1024 * 256)
 #define TEACHER_PAIRS_MAX 256
 
-#define LAYER_BITSIZE 1024
-#define LAYER_DEPTH 6
+#define LAYER_BITSIZE 512
+#define LAYER_DEPTH 3
 #define PARAM_BITSIZE (LAYER_BITSIZE * LAYER_BITSIZE * (LAYER_DEPTH - 1) * 2)
 
 #define COMPLETE_RATE 0.99
-#define EXPLORE_RATE 36
-#define MUTATION_RATE 0.0004
-#define CANCELLATION_RATE 0.25
+#define EXPLORE_RATE 14
+#define MUTATION_RATE 0.001
+#define CANCELLATION_RATE 1.00
 
 struct vec {
     char* data;
@@ -39,8 +39,8 @@ struct teacher_pair {
 
 static char teacher_data[TEACHER_BITSIZE / 8];
 struct teacher_pair teacher_pair[TEACHER_PAIRS_MAX];
-static int teacher_pair_count = 0;
-static int teacher_sxclm_totallen = 0;
+static int32_t teacher_pair_count = 0;
+static int32_t teacher_sxclm_totallen = 0;
 
 static struct bitset backup;
 static uint64_t backup_data[PARAM_BITSIZE / 64];
@@ -52,7 +52,7 @@ static uint64_t buf_data[THREAD_COUNT][LAYER_BITSIZE / 64];
 static char input_data[THREAD_COUNT][OUTPUT_BITSIZE / 8];
 static char output_data[THREAD_COUNT][OUTPUT_BITSIZE / 8];
 
-int tid_data[THREAD_COUNT];
+int32_t tid_data[THREAD_COUNT];
 pthread_t threads[THREAD_COUNT];
 static uint64_t thread_rand[THREAD_COUNT];
 static struct bitset param[THREAD_COUNT];
@@ -61,7 +61,7 @@ static struct bitset buf[THREAD_COUNT];
 static struct vec output[THREAD_COUNT];
 static struct vec input[THREAD_COUNT];
 
-static volatile int training_done = 0;
+static volatile int32_t training_done = 0;
 
 static pthread_mutex_t bestscore_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -137,7 +137,7 @@ void bitset_toggle(struct bitset* bs, int32_t index) {
     bs->data[index / 64] ^= (1ULL << (index % 64));
 }
 
-int bitset_get(const struct bitset* bs, int32_t index) {
+int32_t bitset_get(const struct bitset* bs, int32_t index) {
     return (bs->data[index / 64] & (1ULL << (index % 64))) != 0;
 }
 
@@ -157,12 +157,12 @@ void bitset_swap(struct bitset* a, struct bitset* b) {
 }
 
 #ifdef __AVX512VPOPCNTDQ__
-static int compute_dot(const uint64_t* state_ptr, const uint64_t* param_ptr, int start_bit) {
-    int words_per_block = LAYER_BITSIZE / 64;
+static int32_t compute_dot(const uint64_t* state_ptr, const uint64_t* param_ptr, int32_t start_bit) {
+    int32_t words_per_block = LAYER_BITSIZE / 64;
     const uint64_t* param_pos = param_ptr + (start_bit / 64);
     const uint64_t* param_neg = param_ptr + (start_bit / 64) + words_per_block;
     __m512i dot_sum = _mm512_setzero_si512();
-    int blocks = words_per_block / 8;
+    int32_t blocks = words_per_block / 8;
     for (int32_t j = 0; j < blocks; j++) {
         __m512i s = _mm512_loadu_si512((__m512i const*)(state_ptr + j * 8));
         __m512i p_pos = _mm512_loadu_si512((__m512i const*)(param_pos + j * 8));
@@ -176,7 +176,7 @@ static int compute_dot(const uint64_t* state_ptr, const uint64_t* param_ptr, int
     }
     uint64_t tmp[8];
     _mm512_storeu_si512(tmp, dot_sum);
-    int dot = 0;
+    int32_t dot = 0;
     for (int32_t i = 0; i < 8; i++) {
         dot += tmp[i];
     }
@@ -206,12 +206,12 @@ static inline int64_t horizontal_sum(__m256i v) {
     return res;
 }
 
-static int compute_dot(const uint64_t* state_ptr, const uint64_t* param_ptr, int start_bit) {
-    int words_per_block = LAYER_BITSIZE / 64;
+static int32_t compute_dot(const uint64_t* state_ptr, const uint64_t* param_ptr, int32_t start_bit) {
+    int32_t words_per_block = LAYER_BITSIZE / 64;
     const uint64_t* param_pos = param_ptr + (start_bit / 64);
     const uint64_t* param_neg = param_ptr + (start_bit / 64) + words_per_block;
     __m256i dot_sum = _mm256_setzero_si256();
-    int blocks = words_per_block / 4;
+    int32_t blocks = words_per_block / 4;
     for (int32_t j = 0; j < blocks; j++) {
         __m256i s = _mm256_loadu_si256((__m256i const*)(state_ptr + j * 4));
         __m256i p_pos = _mm256_loadu_si256((__m256i const*)(param_pos + j * 4));
@@ -223,12 +223,12 @@ static int compute_dot(const uint64_t* state_ptr, const uint64_t* param_ptr, int
         __m256i diff = _mm256_sub_epi64(cnt_pos, cnt_neg);
         dot_sum = _mm256_add_epi64(dot_sum, diff);
     }
-    int dot = (int)horizontal_sum(dot_sum);
+    int32_t dot = (int)horizontal_sum(dot_sum);
     return dot;
 }
 #endif
 
-void nn_calc_next(int tid, char ch) {
+void nn_calc_next(int32_t tid, char ch) {
     memset(state[tid].data, 0, 256 / 8);
     bitset_set1(&state[tid], ch + 128);
     int32_t param_i = 0;
@@ -237,7 +237,7 @@ void nn_calc_next(int tid, char ch) {
 
     for (int32_t layer_i = 0; layer_i < LAYER_DEPTH - 1; layer_i++) {
         for (int32_t output_i = 0; output_i < LAYER_BITSIZE; output_i++) {
-            int dot = compute_dot(state[tid].data, param[tid].data, param_i);
+            int32_t dot = compute_dot(state[tid].data, param[tid].data, param_i);
             param_i += 2 * LAYER_BITSIZE;
             if (layer_i == LAYER_DEPTH - 2 && dot > maxchar_value && output_i < 256) {
                 maxchar_index = output_i;
@@ -254,7 +254,7 @@ void nn_calc_next(int tid, char ch) {
     vec_push_back(&output[tid], maxchar_index - 128);
 }
 
-static inline uint64_t xorshift(int tid) {
+static inline uint64_t xorshift(int32_t tid) {
     uint64_t x = thread_rand[tid];
     x ^= x << 13;
     x ^= x >> 17;
@@ -263,7 +263,7 @@ static inline uint64_t xorshift(int tid) {
     return x;
 }
 
-void nn_mutation(int tid) {
+void nn_mutation(int32_t tid) {
     for (int32_t i = 0; i < param[tid].size / 64; i++) {
         if (xorshift(tid) <= MUTATION_RATE * UINT64_MAX) {
             param[tid].data[i] ^= xorshift(tid);
@@ -272,18 +272,17 @@ void nn_mutation(int tid) {
 }
 
 void* train_thread(void* arg) {
-    int tid = *(int*)arg;
+    int32_t tid = *(int*)arg;
     thread_rand[tid] = (uint32_t)time(NULL) + tid;
 
-    int explore = 0;
-    int iteration = 0;
+    int32_t explore = 0;
+    int32_t iteration = 0;
     while (!training_done) {
-        int score = 0;
-        int wrong_count = 0;
-        int correct_count = 0;
-        int correct_last1 = -1;
-        int correct_last2 = -1;
-        int endtest = 0;
+        int32_t score = 0;
+        int32_t wrong_count = 0;
+        int32_t correct_count = 0;
+        int32_t correct_last1 = -1;
+        int32_t endtest = 0;
 
         for (int32_t i = 0; i < teacher_pair_count && !endtest; i++) {
             bitset_clear(&state[tid]);
@@ -297,19 +296,17 @@ void* train_thread(void* arg) {
                 char ch_result = output[tid].data[j];
                 char ch_teacher = teacher_pair[i].sxclm.data[j];
                 if (ch_result == ch_teacher) {
+                    correct_count++;
                     if (correct_last1 == i - 1) {
                         score += 10000;
-                        correct_count++;
-                        correct_last2 = i;
                     } else {
-                        score += 1;
+                        // score += 1;
                     }
                     correct_last1 = i;
                 } else {
                     wrong_count++;
                 }
-
-                if ((float)wrong_count / (float)(correct_count + wrong_count) > CANCELLATION_RATE) {
+                if ((float)correct_count / (float)(correct_count + wrong_count) < CANCELLATION_RATE) {
                     endtest = 1;
                     break;
                 }
@@ -409,7 +406,7 @@ void parse_teacher_data(void) {
             break;
         user_end += strlen(user_close);
 
-        int user_len = (int)(user_end - user_start);
+        int32_t user_len = (int)(user_end - user_start);
 
         char* sxclm_start = strstr(user_end, sxclm_open);
         if (!sxclm_start)
@@ -419,7 +416,7 @@ void parse_teacher_data(void) {
             break;
         sxclm_end += strlen(sxclm_close);
 
-        int sxclm_len = (int)(sxclm_end - sxclm_start);
+        int32_t sxclm_len = (int)(sxclm_end - sxclm_start);
         teacher_sxclm_totallen += sxclm_len;
 
         teacher_pair[teacher_pair_count].user.data = user_start;
@@ -432,7 +429,7 @@ void parse_teacher_data(void) {
     }
 }
 
-int main() {
+int32_t main() {
     global_init();
 
     parse_teacher_data();
