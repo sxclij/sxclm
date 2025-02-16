@@ -1,3 +1,6 @@
+<user>hello</user>
+<sxclm>hello</sxclm>
+
 <user>Is ice cold?</user>
 <sxclm>Yes, ice is cold.</sxclm>
 

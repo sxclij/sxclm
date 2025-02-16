@@ -14,12 +14,12 @@
 #define TEACHER_PAIRS_MAX 256
 
 #define LAYER_BITSIZE 512
-#define LAYER_DEPTH 3
+#define LAYER_DEPTH 2
 #define PARAM_BITSIZE (LAYER_BITSIZE * LAYER_BITSIZE * (LAYER_DEPTH - 1) * 2)
 
 #define COMPLETE_RATE 0.99
-#define EXPLORE_RATE 14
-#define MUTATION_RATE 0.001
+#define EXPLORE_RATE 360
+#define MUTATION_RATE 0.0004
 #define CANCELLATION_RATE 1.00
 
 struct vec {
@@ -232,8 +232,8 @@ void nn_calc_next(int32_t tid, char ch) {
     memset(state[tid].data, 0, 256 / 8);
     bitset_set1(&state[tid], ch + 128);
     int32_t param_i = 0;
-    int8_t maxchar_index = 0;
-    int8_t maxchar_value = -128;
+    int32_t maxchar_index = 0;
+    int32_t maxchar_value = -128;
 
     for (int32_t layer_i = 0; layer_i < LAYER_DEPTH - 1; layer_i++) {
         for (int32_t output_i = 0; output_i < LAYER_BITSIZE; output_i++) {
@@ -283,24 +283,41 @@ void* train_thread(void* arg) {
         int32_t correct_count = 0;
         int32_t correct_last1 = -1;
         int32_t endtest = 0;
+        int32_t brain_sum = 0;
 
         for (int32_t i = 0; i < teacher_pair_count && !endtest; i++) {
             bitset_clear(&state[tid]);
             vec_clear(&output[tid]);
             for (int32_t j = 0; j < teacher_pair[i].user.size; j++) {
                 nn_calc_next(tid, teacher_pair[i].user.data[j]);
+                // char ch_result = output[tid].data[j];
+                // char ch_teacher = teacher_pair[i].user.data[j];
+                // if (ch_result == ch_teacher) {
+                //     score += 1000;
+                // }
             }
+            // for (int32_t k = 0; k < LAYER_BITSIZE; k++) {
+            //     if (bitset_get(&state[tid], k)) {
+            //         brain_sum += 1;
+            //     }
+            // }
+            // score += LAYER_BITSIZE / 2 - abs(brain_sum - LAYER_BITSIZE / 2);
             vec_clear(&output[tid]);
             for (int32_t j = 0; j < teacher_pair[i].sxclm.size; j++) {
-                nn_calc_next(tid, -128);
+                nn_calc_next(tid, 0);
+                // if (j == 0) {
+                //     nn_calc_next(tid, teacher_pair[i].user.data[teacher_pair[i].user.size]);
+                // } else {
+                //     nn_calc_next(tid, teacher_pair[i].sxclm.data[j - 1]);
+                // }
                 char ch_result = output[tid].data[j];
                 char ch_teacher = teacher_pair[i].sxclm.data[j];
                 if (ch_result == ch_teacher) {
                     correct_count++;
                     if (correct_last1 == i - 1) {
-                        score += 10000;
+                        score += 100000;
                     } else {
-                        // score += 1;
+                        score += 1000;
                     }
                     correct_last1 = i;
                 } else {
